@@ -48,6 +48,8 @@ public class BaseNotificationBanner: UIView {
             }
         }
     }
+
+    public var overlapStatusBar: Bool = false
     
     /// The type of haptic to generate when a banner is displayed
     public var haptic: BannerHaptic = .heavy
@@ -60,10 +62,16 @@ public class BaseNotificationBanner: UIView {
     
     /// Closure that will be executed if the notification banner is tapped
     public var onTap: (() -> Void)?
-    
+
     /// Closure that will be executed if the notification banner is swiped up
     public var onSwipeUp: (() -> Void)?
-    
+
+    /// Closure that will be executed if the notification banner is going to appear
+    public var willAppear: (() -> Void)?
+
+    /// Closure that will be executed if the notification banner is going to disappear
+    public var willDisappear: (() -> Void)?
+
     /// Wether or not the notification banner is currently being displayed
     public private(set) var isDisplaying: Bool = false
 
@@ -81,10 +89,7 @@ public class BaseNotificationBanner: UIView {
     
     /// The main window of the application which banner views are placed on
     private let appWindow: UIWindow = UIApplication.shared.delegate!.window!!
-    
-    /// A view that helps the spring animation look nice when the banner appears
-    private var spacerView: UIView!
-    
+
     /// The view controller to display the banner on. This is useful if you are wanting to display a banner underneath a navigation bar
     private weak var parentViewController: UIViewController?
     
@@ -93,31 +98,17 @@ public class BaseNotificationBanner: UIView {
             return contentView.backgroundColor
         } set {
             contentView.backgroundColor = newValue
-            spacerView.backgroundColor = newValue
         }
     }
     
     init(style: BannerStyle, colors: BannerColorsProtocol? = nil) {
         super.init(frame: .zero)
         
-        spacerView = UIView()
-        addSubview(spacerView)
-        
-        spacerView.snp.makeConstraints { (make) in
-            make.top.equalToSuperview().offset(-10)
-            make.left.equalToSuperview()
-            make.right.equalToSuperview()
-            make.height.equalTo(10)
-        }
-        
         contentView = UIView()
         addSubview(contentView)
         
         contentView.snp.makeConstraints { (make) in
-            make.top.equalTo(spacerView.snp.bottom)
-            make.left.equalToSuperview()
-            make.right.equalToSuperview()
-            make.bottom.equalToSuperview()
+            make.edges.equalToSuperview()
         }
         
         if let colors = colors {
@@ -134,6 +125,11 @@ public class BaseNotificationBanner: UIView {
                                                selector: #selector(onOrientationChanged),
                                                name: NSNotification.Name.UIDeviceOrientationDidChange,
                                                object: nil)
+
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(statusBarFrameWillChange(notification:)),
+                                               name: NSNotification.Name.UIApplicationWillChangeStatusBarFrame,
+                                               object: nil)
     }
     
     required public init?(coder aDecoder: NSCoder) {
@@ -141,32 +137,37 @@ public class BaseNotificationBanner: UIView {
     }
     
     deinit {
-        NotificationCenter.default.removeObserver(self,
-                                                  name: NSNotification.Name.UIDeviceOrientationDidChange,
-                                                  object: nil)
+        NotificationCenter.default.removeObserver(self)
     }
     
     /**
         Dismisses the NotificationBanner and shows the next one if there is one to show on the queue
     */
-    public func dismiss() {
+    public func dismiss(completion: (() -> Void)? = nil) {
         NSObject.cancelPreviousPerformRequests(withTarget: self,
                                                selector: #selector(dismiss),
                                                object: nil)
-        UIView.animate(withDuration: 0.5, animations: {
-            
-            self.frame = CGRect(x: 0,
-                                y: -self.frame.height,
-                                width: self.frame.width,
-                                height: self.frame.height)
+        let duration = UIView.inheritedAnimationDuration > 0 ? UIView.inheritedAnimationDuration : 0.5
+
+        UIView.animate(withDuration: duration, animations: {
+            self.frame.origin.y = -self.bannerHeight + UIApplication.shared.statusBarFrame.height
+
+            let rootView = self.appWindow.rootViewController!.view!
+            rootView.frame.size.height = UIScreen.main.bounds.height
+            rootView.frame.origin.y = 0
+            rootView.setNeedsLayout()
+            rootView.layoutIfNeeded()
+
+            self.willDisappear?()
+            self.willDisappear = nil
         }) { (completed) in
             self.removeFromSuperview()
             self.isDisplaying = false
-            self.bannerQueue.showNext(callback: { (isEmpty) in
-                if isEmpty || self.statusBarShouldBeShown() {
-                    self.appWindow.windowLevel = UIWindowLevelNormal
-                }
-            })
+            self.bannerQueue.showNext()
+            completion?()
+
+            self.onTap = nil
+            self.onSwipeUp = nil
         }
     }
     
@@ -192,9 +193,11 @@ public class BaseNotificationBanner: UIView {
             bannerQueue.addBanner(self, queuePosition: queuePosition)
         } else {
             self.frame = CGRect(x: 0,
-                                y: -bannerHeight,
+                                y: -self.bannerHeight + UIApplication.shared.statusBarFrame.height,
                                 width: appWindow.frame.width,
-                                height: bannerHeight)
+                                height: self.bannerHeight)
+            self.setNeedsLayout()
+            self.layoutIfNeeded()
             
             if let parentViewController = parentViewController {
                 parentViewController.view.addSubview(self)
@@ -203,18 +206,28 @@ public class BaseNotificationBanner: UIView {
                 }
             } else {
                 appWindow.addSubview(self)
-                appWindow.windowLevel = UIWindowLevelStatusBar + 1
+
+                if overlapStatusBar {
+                    appWindow.windowLevel = UIWindowLevelStatusBar + 1
+                }
             }
-            
-            UIView.animate(withDuration: 0.5,
-                           delay: 0.0,
-                           usingSpringWithDamping: 0.7,
-                           initialSpringVelocity: 1,
-                           options: .curveLinear,
-                           animations: {
+
+            let duration = UIView.inheritedAnimationDuration > 0 ? UIView.inheritedAnimationDuration : 0.5
+
+            UIView.animate(withDuration: duration, animations: {
                 BannerHapticGenerator.generate(self.haptic)
-                self.frame = CGRect(x: 0, y: 0, width: self.frame.width, height: self.frame.height)
-                            
+
+                self.frame.origin.y = UIApplication.shared.statusBarFrame.height
+
+                let verticalOffset = self.bannerHeight + UIApplication.shared.statusBarFrame.height
+                let rootView = self.appWindow.rootViewController!.view!
+                rootView.frame.size.height = UIScreen.main.bounds.height - verticalOffset
+                rootView.frame.origin.y = verticalOffset
+                rootView.setNeedsLayout()
+                rootView.layoutIfNeeded()
+
+                self.willAppear?()
+                self.willAppear = nil
             }) { (completed) in
                 
                 self.isDisplaying = true
@@ -257,6 +270,25 @@ public class BaseNotificationBanner: UIView {
     private dynamic func onOrientationChanged() {
         self.frame = CGRect(x: self.frame.origin.x, y: self.frame.origin.y, width: appWindow.frame.width, height: self.frame.height)
     }
+
+    private dynamic func statusBarFrameWillChange(notification: Notification) {
+        if isDisplaying {
+            let duration = UIView.inheritedAnimationDuration > 0 ? UIView.inheritedAnimationDuration : 0.31
+
+            DispatchQueue.main.async {
+                UIView.animate(withDuration: duration, animations: {
+                    self.frame.origin.y = UIApplication.shared.statusBarFrame.height
+
+                    let verticalOffset = self.bannerHeight + UIApplication.shared.statusBarFrame.height
+                    let rootView = self.appWindow.rootViewController!.view!
+                    rootView.frame.size.height = UIScreen.main.bounds.height - verticalOffset
+                    rootView.frame.origin.y = verticalOffset
+                    rootView.setNeedsLayout()
+                    rootView.layoutIfNeeded()
+                })
+            }
+        }
+    }
     
     /**
         Called when a notification banner is tapped
@@ -280,13 +312,15 @@ public class BaseNotificationBanner: UIView {
         onSwipeUp?()
     }
     
-    
     /**
         Determines wether or not the status bar should be shown when displaying a banner underneath
         the navigation bar
      */
     private func statusBarShouldBeShown() -> Bool {
-        
+        guard overlapStatusBar else {
+            return true
+        }
+
         for banner in bannerQueue.banners {
             if banner.parentViewController == nil {
                 return false

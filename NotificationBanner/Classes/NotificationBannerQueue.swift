@@ -35,6 +35,8 @@ public class NotificationBannerQueue: NSObject {
     public var numberOfBanners: Int {
         return banners.count
     }
+
+    public var onBannerNumberChanged: ((Int) -> Void)?
     
     /**
         Adds a banner to the queue
@@ -46,11 +48,12 @@ public class NotificationBannerQueue: NSObject {
         
         if queuePosition == .back {
             banners.append(banner)
-            
+
             if banners.index(of: banner) == 0 {
                 banner.show(placeOnQueue: false)
             }
-            
+
+            onBannerNumberChanged?(numberOfBanners)
         } else {
             banner.show(placeOnQueue: false)
             
@@ -59,6 +62,8 @@ public class NotificationBannerQueue: NSObject {
             }
             
             banners.insert(banner, at: 0)
+
+            onBannerNumberChanged?(numberOfBanners)
         }
         
     }
@@ -67,11 +72,14 @@ public class NotificationBannerQueue: NSObject {
         Shows the next notificaiton banner on the queue if one exists
         -parameter callback: The closure to execute after a banner is shown or when the queue is empty
     */
-    func showNext(callback: ((_ isEmpty: Bool) -> Void)) {
+    func showNext(callback: ((_ isEmpty: Bool) -> Void)? = nil) {
     
         banners.remove(at: 0)
+
+        onBannerNumberChanged?(numberOfBanners)
+
         guard let banner = banners.first else {
-            callback(true)
+            callback?(true)
             return
         }
         
@@ -81,6 +89,6 @@ public class NotificationBannerQueue: NSObject {
             banner.show(placeOnQueue: false)
         }
         
-        callback(false)
+        callback?(false)
     }
 }
